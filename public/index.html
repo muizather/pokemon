@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pokémon Battle Arena - Online</title>
+    <!-- Include Socket.IO Client Library -->
+    <script src="/socket.io/socket.io.js"></script>
+    <!-- Tailwind CSS and Fonts -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        /* Apply game font globally */
+        body, button, input, select, textarea {
+            font-family: 'Press Start 2P', cursive;
+        }
+
+        /* --- ADJUSTED CSS for IMG Sprites --- */
+        .pokemon-sprite-container { /* Optional: Use a container if you need border/background separate from image */
+             width: 96px;
+             height: 96px;
+             display: flex; /* Center image within container */
+             align-items: center;
+             justify-content: center;
+             border: 2px solid #333;
+             background-color: #eee; /* Background shows if image is missing/loading */
+             overflow: hidden; /* Prevents large images overflowing */
+        }
+
+        .pokemon-sprite-img {
+            width: 96px; /* Target sprite size */
+            height: 96px;
+            object-fit: contain; /* Scale image nicely within dimensions */
+            image-rendering: pixelated; /* Keep pixel art crisp */
+        }
+
+        /* Adjust selection card sprite size */
+        .pokemon-card .pokemon-sprite-container {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 5px auto; /* Center container */
+        }
+         .pokemon-card .pokemon-sprite-img {
+            width: 64px;
+            height: 64px;
+        }
+
+        .health-bar-background {
+            background-color: #e0e0e0; /* Light grey background */
+            border-radius: 0.25rem; /* rounded-sm */
+            overflow: hidden;
+            border: 1px solid #999;
+            height: 12px; /* Slimmer health bar */
+        }
+
+        .health-bar-foreground {
+            background-color: #4ade80; /* green-400 */
+            height: 100%;
+            transition: width 0.5s ease-in-out; /* Smooth transition */
+            border-radius: 0.125rem; /* rounded-xs */
+        }
+
+        .health-bar-foreground.low {
+            background-color: #facc15; /* yellow-400 */
+        }
+
+        .health-bar-foreground.critical {
+            background-color: #f87171; /* red-400 */
+        }
+
+        /* Simple animation for taking damage - apply to container */
+        @keyframes take-damage {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-3px); }
+            50% { transform: translateX(3px); }
+            75% { transform: translateX(-3px); }
+        }
+        .damage-animation {
+            animation: take-damage 0.2s ease-in-out;
+        }
+
+        /* Style for message box */
+        #message-box {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            z-index: 1000;
+            display: none; /* Hidden by default */
+            text-align: center;
+            font-size: 14px;
+            border: 2px solid #fff;
+        }
+        #message-box button {
+             margin-top: 15px;
+             padding: 8px 15px;
+             background-color: #4CAF50;
+             color: white;
+             border: none;
+             border-radius: 5px;
+             cursor: pointer;
+             font-size: 12px;
+             box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+        }
+         #message-box button:hover {
+             background-color: #45a049;
+         }
+
+         /* Button Styles */
+        .action-button {
+            padding: 10px 15px;
+            margin: 5px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            background-color: #f0f0f0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 3px 3px 0px #888; /* Pixel shadow */
+            font-size: 10px; /* Smaller font for buttons */
+             line-height: 1.2; /* Adjust line height for potentially taller buttons */
+        }
+        .action-button:hover:not(:disabled) { /* Ensure hover effect only when not disabled */
+            background-color: #ddd;
+            transform: translate(1px, 1px);
+            box-shadow: 2px 2px 0px #888;
+        }
+        .action-button:active:not(:disabled) {
+            background-color: #ccc;
+            transform: translate(3px, 3px);
+            box-shadow: none;
+        }
+        .action-button.disabled {
+            background-color: #aaa !important; /* Use important to override potential hover styles */
+            color: #eee !important;
+            cursor: not-allowed !important;
+            box-shadow: 3px 3px 0px #666 !important;
+            transform: none !important; /* Prevent movement when disabled */
+        }
+
+        /* Selection Screen Styles */
+        .pokemon-card {
+            border: 2px solid #333;
+            border-radius: 8px;
+            padding: 10px;
+            margin: 5px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            text-align: center;
+        }
+        .pokemon-card:hover {
+            background-color: #e0e0e0;
+        }
+        .pokemon-card.selected {
+            background-color: #a7f3d0; /* Light green */
+            border-color: #10b981; /* Green */
+        }
+
+        /* Add style for waiting message */
+        #waiting-message {
+             display: none; /* Hidden by default */
+        }
+
+    </style>
+</head>
+<body class="bg-green-100 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <h1 class="text-2xl font-bold mb-6 text-center text-gray-800">Pokémon Battle Arena - Online</h1>
+
+    <div id="start-screen" class="text-center p-6 bg-white rounded-lg shadow-lg border-4 border-blue-500">
+        <h2 class="text-xl mb-4">Ready to Battle?</h2>
+        <div class="mb-4">
+             <label for="username-input" class="block text-sm mb-1">Enter Username:</label>
+             <input type="text" id="username-input" placeholder="TrainerName" class="p-2 border border-gray-400 rounded text-sm max-w-xs w-full">
+             <button id="set-username-button" class="action-button bg-purple-500 text-white hover:bg-purple-600 text-xs mt-2">Set Name</button>
+             <p id="username-display" class="mt-2 text-sm text-gray-600"></p>
+        </div>
+        <button id="find-match-button" class="action-button bg-blue-500 text-white hover:bg-blue-600 disabled" disabled>Find Match</button>
+        <!-- Placeholder for waiting message -->
+        <p id="waiting-message" class="text-center text-lg mt-4 text-blue-600"></p>
+        <div class="mt-6">
+            <h3 class="text-lg mb-2">Leaderboard (Top 10)</h3>
+            <button id="refresh-leaderboard-button" class="action-button text-xs bg-gray-200">Refresh</button>
+            <div id="leaderboard" class="text-left mt-2 text-sm max-w-xs mx-auto border p-2 rounded bg-gray-50">
+                Loading...
+            </div>
+        </div>
+    </div>
+
+    <div id="selection-screen" class="hidden w-full max-w-2xl p-6 bg-white rounded-lg shadow-lg border-4 border-yellow-500">
+        <h2 class="text-xl mb-4 text-center">Select Your Team (Choose 3)</h2>
+        <div id="pokemon-selection-list" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mb-4">
+            <!-- Populated by JS using data from server -->
+        </div>
+        <div class="text-center">
+            <button id="confirm-selection-button" class="action-button bg-green-500 text-white hover:bg-green-600 disabled" disabled>Confirm Team</button>
+        </div>
+         <p id="selection-count" class="text-center mt-2 text-sm text-gray-600">Selected: 0 / 3</p>
+    </div>
+
+    <div id="battle-screen" class="hidden w-full max-w-3xl p-4 bg-white rounded-lg shadow-lg border-4 border-red-500">
+        <!-- Opponent -->
+        <div class="flex justify-end mb-4">
+            <div class="text-right">
+                <div id="opponent-pokemon-name" class="font-bold text-sm">Opponent Pokémon</div>
+                <!-- ADDED Ability Display -->
+                <div id="opponent-ability-display" class="text-xs text-gray-500 italic">Ability</div>
+                <div class="health-bar-background w-32 sm:w-48 mt-1">
+                    <div id="opponent-health-bar" class="health-bar-foreground"></div>
+                </div>
+                <div id="opponent-health-text" class="text-xs mt-1">HP: ?/?</div>
+                 <div id="opponent-username-display" class="text-xs text-gray-500 mt-1">Opponent</div>
+            </div>
+            <div id="opponent-sprite-container" class="pokemon-sprite-container ml-2">
+                <img id="opponent-sprite-img" class="pokemon-sprite-img" src="" alt="Opponent Pokémon">
+            </div>
+        </div>
+
+        <!-- Player -->
+        <div class="flex justify-start mb-6">
+            <div id="player-sprite-container" class="pokemon-sprite-container mr-2">
+                 <img id="player-sprite-img" class="pokemon-sprite-img" src="" alt="Player Pokémon">
+            </div>
+            <div class="text-left">
+                <div id="player-pokemon-name" class="font-bold text-sm">Player Pokémon</div>
+                 <!-- ADDED Ability Display -->
+                 <div id="player-ability-display" class="text-xs text-gray-500 italic">Ability</div>
+                <div class="health-bar-background w-32 sm:w-48 mt-1">
+                    <div id="player-health-bar" class="health-bar-foreground"></div>
+                </div>
+                 <div id="player-health-text" class="text-xs mt-1">HP: ?/?</div>
+                 <div id="player-username-display" class="text-xs text-gray-500 mt-1">You</div>
+            </div>
+        </div>
+
+        <!-- Battle Log -->
+        <div id="battle-log" class="h-20 border-2 border-gray-400 rounded p-2 mb-4 overflow-y-auto text-xs bg-gray-100">
+            Welcome to the Battle Arena!
+        </div>
+
+        <!-- Action Buttons -->
+        <div id="action-buttons" class="grid grid-cols-2 gap-2">
+             <button id="attack-button" class="action-button">Attack</button>
+             <button id="switch-button" class="action-button">Switch</button>
+        </div>
+        <!-- Move Buttons (Hidden initially) -->
+        <div id="move-buttons" class="hidden grid grid-cols-2 gap-2 mt-2">
+             <!-- Populated by JS -->
+        </div>
+         <!-- Switch Options (Hidden initially) -->
+         <div id="switch-options" class="hidden grid grid-cols-2 gap-2 mt-2">
+             <!-- Populated by JS -->
+         </div>
+    </div>
+
+    <!-- Message Box -->
+    <div id="message-box">
+        <p id="message-text"></p>
+        <button id="message-ok-button">OK</button>
+    </div>
+
+
+    <!-- ================================================== -->
+    <!-- ==      UPDATED CLIENT SCRIPT W/ API MOVES      == -->
+    <!-- ================================================== -->
+    <script>
+        // --- Socket.IO Connection ---
+        const socket = io();
+        let currentGameId = null; let myPlayerId = null; let myPlayerNum = null;
+        let myUsername = ''; let opponentUsername = '';
+
+        // --- Game Data (Client - Fetched from server) ---
+        let availablePokemonForSelection = [];
+
+        // --- Client Game State ---
+        let gameState = 'start';
+        let selectedPokemonIds = []; // Store selected Pokedex IDs (numbers)
+        let currentGameData = null;
+
+        // --- DOM Elements ---
+        let startScreen, selectionScreen, battleScreen, findMatchButton, pokemonSelectionList,
+            confirmSelectionButton, selectionCount, opponentPokemonName, opponentHealthBar,
+            opponentHealthText, opponentSpriteContainer, opponentSpriteImg, playerPokemonName,
+            playerHealthBar, playerHealthText, playerSpriteContainer, playerSpriteImg,
+            battleLogElement, actionButtons, attackButton, switchButton, moveButtonsContainer,
+            switchOptionsContainer, messageBox, messageText, messageOkButton, waitingMessage,
+            usernameInput, setUsernameButton, usernameDisplay, playerUsernameDisplay, opponentUsernameDisplay,
+            leaderboardDiv, refreshLeaderboardButton,
+            playerAbilityDisplay, opponentAbilityDisplay; // Added ability elements
+
+         document.addEventListener('DOMContentLoaded', () => {
+            // Assign all DOM Element variables
+            startScreen = document.getElementById('start-screen');
+            selectionScreen = document.getElementById('selection-screen');
+            battleScreen = document.getElementById('battle-screen');
+            findMatchButton = document.getElementById('find-match-button');
+            waitingMessage = document.getElementById('waiting-message');
+            usernameInput = document.getElementById('username-input');
+            setUsernameButton = document.getElementById('set-username-button');
+            usernameDisplay = document.getElementById('username-display');
+            leaderboardDiv = document.getElementById('leaderboard');
+            refreshLeaderboardButton = document.getElementById('refresh-leaderboard-button');
+            pokemonSelectionList = document.getElementById('pokemon-selection-list');
+            confirmSelectionButton = document.getElementById('confirm-selection-button');
+            selectionCount = document.getElementById('selection-count');
+            opponentPokemonName = document.getElementById('opponent-pokemon-name');
+            opponentHealthBar = document.getElementById('opponent-health-bar');
+            opponentHealthText = document.getElementById('opponent-health-text');
+            opponentSpriteContainer = document.getElementById('opponent-sprite-container');
+            opponentSpriteImg = document.getElementById('opponent-sprite-img');
+            opponentUsernameDisplay = document.getElementById('opponent-username-display');
+            playerPokemonName = document.getElementById('player-pokemon-name');
+            playerHealthBar = document.getElementById('player-health-bar');
+            playerHealthText = document.getElementById('player-health-text');
+            playerSpriteContainer = document.getElementById('player-sprite-container');
+            playerSpriteImg = document.getElementById('player-sprite-img');
+            playerUsernameDisplay = document.getElementById('player-username-display');
+            battleLogElement = document.getElementById('battle-log');
+            actionButtons = document.getElementById('action-buttons');
+            attackButton = document.getElementById('attack-button');
+            switchButton = document.getElementById('switch-button');
+            moveButtonsContainer = document.getElementById('move-buttons');
+            switchOptionsContainer = document.getElementById('switch-options');
+            messageBox = document.getElementById('message-box');
+            messageText = document.getElementById('message-text');
+            messageOkButton = document.getElementById('message-ok-button');
+            // Assign ability display elements
+            playerAbilityDisplay = document.getElementById('player-ability-display');
+            opponentAbilityDisplay = document.getElementById('opponent-ability-display');
+
+            // --- Event Listeners ---
+            findMatchButton.addEventListener('click', findMatch);
+            confirmSelectionButton.addEventListener('click', confirmSelection);
+            attackButton.addEventListener('click', showMoveSelection);
+            switchButton.addEventListener('click', () => showSwitchSelection(false));
+            setUsernameButton.addEventListener('click', setUsername);
+            usernameInput.addEventListener('keyup', (event) => { if (event.key === "Enter") setUsername(); });
+            refreshLeaderboardButton.addEventListener('click', fetchLeaderboard);
+
+            // --- Initial Setup ---
+            resetToStartScreen();
+            fetchLeaderboard();
+         });
+
+
+        // --- Utility Functions ---
+        function updateBattleLog(messages) {
+            if (!battleLogElement) return;
+            battleLogElement.innerHTML = messages.join('<br>');
+            battleLogElement.scrollTop = battleLogElement.scrollHeight;
+        }
+
+        function showMessage(text, onOk = null) {
+            if (!messageBox || !messageText || !messageOkButton) return;
+            messageText.innerText = text;
+            messageBox.style.display = 'block';
+            messageOkButton.onclick = () => {
+                messageBox.style.display = 'none';
+                if (onOk) { try { onOk(); } catch (e) { console.error("Msg OK cb error:", e); } }
+            };
+        }
+
+        function updateHealthBar(barElement, textElement, currentHp, maxHp) {
+             if (!barElement || !textElement || typeof currentHp !== 'number' || typeof maxHp !== 'number' || maxHp <= 0) return;
+             const percentage = Math.max(0, (currentHp / maxHp) * 100);
+             barElement.style.width = `${percentage}%`;
+             textElement.textContent = `HP: ${Math.max(0, currentHp)}/${maxHp}`;
+             barElement.classList.remove('low', 'critical');
+             if (percentage < 50 && percentage >= 20) barElement.classList.add('low');
+             else if (percentage < 20) barElement.classList.add('critical');
+        }
+
+        function disableActionButtons(disabled = true) {
+             if (!actionButtons || !moveButtonsContainer || !switchOptionsContainer) return;
+             const isMyTurn = currentGameData && currentGameData.turn === myPlayerId;
+             const playerState = currentGameData?.battleState ?
+                ((currentGameData.battleState.player1?.id === myPlayerId) ? currentGameData.battleState.player1 : currentGameData.battleState.player2)
+                : null;
+             const mustSwitch = playerState?.mustSwitch ?? false;
+
+             const buttons = actionButtons.querySelectorAll('button');
+             buttons.forEach(button => {
+                 const shouldBeDisabled = disabled || !isMyTurn || (mustSwitch && button.id === 'attack-button');
+                 button.disabled = shouldBeDisabled;
+                 button.classList.toggle('disabled', shouldBeDisabled);
+             });
+
+             if ((disabled || !isMyTurn) && !mustSwitch) {
+                 moveButtonsContainer.classList.add('hidden');
+                 switchOptionsContainer.classList.add('hidden');
+             }
+              if (mustSwitch) { moveButtonsContainer.classList.add('hidden'); }
+              if (mustSwitch && isMyTurn) { switchOptionsContainer.classList.remove('hidden'); }
+        }
+
+
+        // --- Game Logic Functions ---
+        function setUsername() {
+             if (!usernameInput || !setUsernameButton || !findMatchButton) return;
+             const desiredUsername = usernameInput.value;
+             socket.emit('setUsername', desiredUsername);
+             setUsernameButton.disabled = true; setUsernameButton.textContent = 'Setting...';
+        }
+
+         function fetchLeaderboard() {
+             if (!leaderboardDiv) return;
+             leaderboardDiv.textContent = 'Refreshing...';
+             socket.emit('getLeaderboard');
+         }
+
+        function populateSelectionScreen() {
+             if (!pokemonSelectionList || !selectionCount || !confirmSelectionButton || !selectionScreen) return;
+             pokemonSelectionList.innerHTML = ''; selectedPokemonIds = []; updateSelectionCount();
+
+             if (availablePokemonForSelection.length === 0) {
+                 pokemonSelectionList.innerHTML = '<p class="col-span-full text-center text-red-500">Waiting for available Pokémon list from server...</p>';
+                 return; // Wait for availablePokemon event
+             }
+
+             availablePokemonForSelection.forEach(pokemon => {
+                 const card = document.createElement('div');
+                 card.classList.add('pokemon-card'); card.dataset.pokemonId = pokemon.id;
+                 card.innerHTML = `
+                     <div class="pokemon-sprite-container"> <img src="${pokemon.spriteUrl || ''}" alt="${pokemon.name}" class="pokemon-sprite-img"> </div>
+                     <div class="font-bold text-xs">${pokemon.name}</div>
+                 `;
+                 card.addEventListener('click', () => togglePokemonSelection(pokemon.id, card));
+                 pokemonSelectionList.appendChild(card);
+             });
+             updateConfirmButtonState();
+             selectionScreen.querySelector('h2').textContent = `Select Your Team (${myUsername || 'Player ' + (myPlayerNum || '?')})`;
+        }
+
+        function togglePokemonSelection(id, cardElement) {
+            if (!confirmSelectionButton || typeof id !== 'number') return;
+            if (selectedPokemonIds.includes(id)) {
+                selectedPokemonIds = selectedPokemonIds.filter(selId => selId !== id); cardElement.classList.remove('selected');
+            } else if (selectedPokemonIds.length < 3) {
+                selectedPokemonIds.push(id); cardElement.classList.add('selected');
+            } else { showMessage("You can only select 3 Pokémon!"); return; }
+            updateSelectionCount(); updateConfirmButtonState();
+        }
+
+        function updateSelectionCount() {
+             if (!selectionCount) return;
+             selectionCount.textContent = `Selected: ${selectedPokemonIds.length} / 3`;
+        }
+
+        function updateConfirmButtonState() {
+            if (!confirmSelectionButton) return;
+            confirmSelectionButton.disabled = (selectedPokemonIds.length !== 3);
+            confirmSelectionButton.classList.toggle('disabled', selectedPokemonIds.length !== 3);
+        }
+
+        function findMatch() {
+             if (!findMatchButton || !waitingMessage) return;
+             if (!myUsername) { showMessage("Please set a username first!"); return; }
+             console.log("Requesting match..."); socket.emit('findMatch');
+             gameState = 'waiting'; findMatchButton.disabled = true; findMatchButton.textContent = 'Waiting...';
+             findMatchButton.classList.add('disabled'); waitingMessage.textContent = 'Looking for an opponent...'; waitingMessage.style.display = 'block';
+             if(usernameInput) usernameInput.disabled = true; if(setUsernameButton) setUsernameButton.disabled = true;
+        }
+
+        function confirmSelection() {
+             if (!confirmSelectionButton || !selectionCount) return;
+             if (selectedPokemonIds.length !== 3 || !currentGameId) return;
+             console.log(`Confirming selection (IDs) for game ${currentGameId}:`, selectedPokemonIds);
+             socket.emit('selectTeam', { gameId: currentGameId, teamIds: selectedPokemonIds });
+             gameState = 'waiting'; confirmSelectionButton.disabled = true; confirmSelectionButton.textContent = 'Waiting...';
+             confirmSelectionButton.classList.add('disabled'); selectionCount.textContent = 'Waiting for opponent...';
+        }
+
+
+        function updateUIFromState(state) {
+            // Add ability display elements to guard
+             if (!state || !state.battleState ||
+                 !playerPokemonName || !playerHealthBar || !playerHealthText || !playerSpriteImg || !playerAbilityDisplay || // Added player ability
+                 !opponentPokemonName || !opponentHealthBar || !opponentHealthText || !opponentSpriteImg || !opponentAbilityDisplay || // Added opponent ability
+                 !battleLogElement || !actionButtons || !playerSpriteContainer || !opponentSpriteContainer ||
+                 !playerUsernameDisplay || !opponentUsernameDisplay) {
+                 console.error("State or DOM Elements missing for UI update:", { stateExists: !!state, battleStateExists: !!state?.battleState, elementsReady: !!playerSpriteImg });
+                 return;
+             }
+             currentGameData = state; // Store latest state
+
+             const p1 = state.battleState.player1; const p2 = state.battleState.player2;
+             const playerState = (p1?.id === myPlayerId) ? p1 : p2;
+             const opponentState = (p1?.id === myPlayerId) ? p2 : p1;
+
+             if (playerState && opponentState && playerState.activePokemon && opponentState.activePokemon) {
+                 // Player Update
+                 myUsername = playerState.username || myUsername;
+                 playerPokemonName.textContent = playerState.activePokemon.name;
+                 playerAbilityDisplay.textContent = playerState.activePokemon.abilityName || 'Ability'; // Set ability text
+                 updateHealthBar(playerHealthBar, playerHealthText, playerState.activePokemon.currentHp, playerState.activePokemon.maxHp);
+                 playerUsernameDisplay.textContent = myUsername;
+                 playerSpriteImg.src = playerState.activePokemon.spriteUrl || "";
+                 playerSpriteImg.alt = playerState.activePokemon.name;
+                 playerSpriteContainer.classList.remove('damage-animation');
+
+                 // Opponent Update
+                 opponentUsername = opponentState.username || opponentUsername;
+                 opponentPokemonName.textContent = opponentState.activePokemon.name;
+                 opponentAbilityDisplay.textContent = opponentState.activePokemon.abilityName || 'Ability'; // Set ability text
+                 updateHealthBar(opponentHealthBar, opponentHealthText, opponentState.activePokemon.currentHp, opponentState.activePokemon.maxHp);
+                 opponentUsernameDisplay.textContent = opponentUsername;
+                 opponentSpriteImg.src = opponentState.activePokemon.spriteUrl || "";
+                 opponentSpriteImg.alt = opponentState.activePokemon.name;
+                 opponentSpriteContainer.classList.remove('damage-animation');
+
+                 // Damage Animation Logic
+                const lastLog = state.log && state.log.length > 0 ? state.log[state.log.length - 1] : "";
+                const currentOpponentName = opponentState.activePokemon.name;
+                const currentPlayerName = playerState.activePokemon.name;
+                if (lastLog.includes(' damage.') && lastLog.includes(`${opponentUsername}'s ${currentOpponentName}`)) { opponentSpriteContainer.classList.add('damage-animation'); }
+                if (lastLog.includes(' damage.') && lastLog.includes(`${myUsername}'s ${currentPlayerName}`)) { playerSpriteContainer.classList.add('damage-animation'); }
+
+             } else {
+                  console.warn("Player/Opponent state or active Pokemon missing, partial UI update.");
+                  playerSpriteImg.src = ""; playerSpriteImg.alt = "Error Loading";
+                  opponentSpriteImg.src = ""; opponentSpriteImg.alt = "Error Loading";
+                  playerAbilityDisplay.textContent = "Ability"; opponentAbilityDisplay.textContent = "Ability"; // Reset ability display on error
+             }
+
+             // Update Battle Log
+             updateBattleLog(state.log || ["Log unavailable."]);
+
+             // Update Turn Indicator / Buttons
+             const isMyTurn = state.turn === myPlayerId;
+             const mustSwitch = playerState?.mustSwitch ?? false;
+             if (moveButtonsContainer) moveButtonsContainer.classList.add('hidden');
+             if (switchOptionsContainer) switchOptionsContainer.classList.add('hidden');
+             if (isMyTurn) {
+                 if (mustSwitch && playerState?.activePokemon) { if (actionButtons) actionButtons.classList.add('hidden'); showSwitchSelection(true); disableActionButtons(false); if (switchOptionsContainer) switchOptionsContainer.classList.remove('hidden'); }
+                 else if (playerState?.activePokemon) { if (actionButtons) actionButtons.classList.remove('hidden'); disableActionButtons(false); }
+                 else { if (actionButtons) actionButtons.classList.add('hidden'); disableActionButtons(true); }
+                 playerSpriteContainer.style.borderColor = 'gold'; opponentSpriteContainer.style.borderColor = '#333';
+             } else {
+                 if (actionButtons) actionButtons.classList.remove('hidden'); disableActionButtons(true);
+                 playerSpriteContainer.style.borderColor = '#333'; opponentSpriteContainer.style.borderColor = 'gold';
+             }
+        }
+
+        function showMoveSelection() {
+            if (!currentGameData || !actionButtons || !moveButtonsContainer || currentGameData.turn !== myPlayerId) return;
+             const playerState = (currentGameData.battleState.player1?.id === myPlayerId) ? currentGameData.battleState.player1 : currentGameData.battleState.player2;
+            if (!playerState || !playerState.activePokemon || playerState.activePokemon.fainted || !playerState.activePokemon.moves) {
+                console.warn("Cannot show moves: No active/valid pokemon or moves missing."); return;
+            }
+
+            actionButtons.classList.add('hidden');
+            moveButtonsContainer.classList.remove('hidden');
+            moveButtonsContainer.innerHTML = '';
+
+            playerState.activePokemon.moves.forEach((move) => {
+                const button = document.createElement('button');
+                // Display name and power (display 0/null as 'Status')
+                 const powerDisplay = (move.power === 0 || move.power === null) ? "Status" : `Pow: ${move.power}`;
+                 button.textContent = `${move.name} (${powerDisplay})`; // Format button text
+                 button.classList.add('action-button');
+                button.onclick = () => executePlayerAction({ type: 'attack', moveName: move.name });
+                moveButtonsContainer.appendChild(button);
+            });
+
+            addBackButton(moveButtonsContainer);
+        }
+
+        function showSwitchSelection(isForced = false) {
+            if (!currentGameData || !currentGameData.battleState || !switchOptionsContainer) return;
+            if (!isForced && currentGameData.turn !== myPlayerId) return;
+
+             const playerState = (currentGameData.battleState.player1?.id === myPlayerId) ? currentGameData.battleState.player1 : currentGameData.battleState.player2;
+            if (!playerState || !playerState.team) { console.warn("Cannot show switch options: Player state or team missing."); return; }
+
+            if (!isForced && actionButtons) actionButtons.classList.add('hidden');
+            switchOptionsContainer.classList.remove('hidden');
+            switchOptionsContainer.innerHTML = '';
+            let availableSwitchCount = 0;
+
+            playerState.team.forEach((pokemon, index) => {
+                const button = document.createElement('button'); button.classList.add('action-button');
+                const isActive = index === playerState.activePokemonIndex;
+                if (isActive) { button.textContent = `${pokemon.name} (Active)`; button.disabled = true; button.classList.add('disabled'); }
+                else if (pokemon.fainted) { button.textContent = `${pokemon.name} (Fainted)`; button.disabled = true; button.classList.add('disabled'); }
+                else { button.textContent = `${pokemon.name} (${pokemon.currentHp}/${pokemon.maxHp} HP)`; button.onclick = () => executePlayerAction({ type: 'switch', pokemonIndex: index }); availableSwitchCount++; }
+                switchOptionsContainer.appendChild(button);
+            });
+
+            if (!isForced) addBackButton(switchOptionsContainer);
+            if (availableSwitchCount === 0 && isForced) { console.error("Forced switch requested, but no Pokémon available!"); showMessage("Error: No available Pokémon to switch to!"); }
+            else if (availableSwitchCount === 0 && !isForced) { showMessage("No available Pokémon to switch to!"); goBackToActionSelect(); }
+        }
+
+        function goBackToActionSelect() {
+             if(moveButtonsContainer) moveButtonsContainer.classList.add('hidden');
+             if(switchOptionsContainer) switchOptionsContainer.classList.add('hidden');
+              const playerState = currentGameData?.battleState ?
+                 ((currentGameData.battleState.player1?.id === myPlayerId) ? currentGameData.battleState.player1 : currentGameData.battleState.player2) : null;
+             if (playerState?.mustSwitch !== true) { if (actionButtons) actionButtons.classList.remove('hidden'); }
+             else { if (actionButtons) actionButtons.classList.add('hidden'); if (switchOptionsContainer) switchOptionsContainer.classList.remove('hidden'); }
+        }
+
+        function addBackButton(container) {
+            if (!container) return;
+            const backButton = document.createElement('button');
+            backButton.textContent = 'Back'; backButton.classList.add('action-button', 'bg-gray-300', 'col-span-2');
+            backButton.onclick = goBackToActionSelect; container.appendChild(backButton);
+        }
+
+        function executePlayerAction(action) {
+             if (!currentGameId || !currentGameData || currentGameData.turn !== myPlayerId) { showMessage("Not your turn!"); return; }
+             const playerState = (currentGameData.battleState.player1?.id === myPlayerId) ? currentGameData.battleState.player1 : currentGameData.battleState.player2;
+             const mustSwitch = playerState?.mustSwitch ?? false;
+             if (mustSwitch && action.type !== 'switch') { showMessage("You must switch your Pokémon!"); showSwitchSelection(true); return; }
+             disableActionButtons(true);
+             if (moveButtonsContainer) moveButtonsContainer.classList.add('hidden'); if (switchOptionsContainer) switchOptionsContainer.classList.add('hidden'); if (actionButtons) actionButtons.classList.remove('hidden');
+             console.log(`Sending action for game ${currentGameId}:`, action);
+             socket.emit('performAction', { gameId: currentGameId, action: action });
+        }
+
+        function resetToStartScreen() {
+            console.log("Resetting to start screen");
+             // Add ability elements to the guard check
+             if (!startScreen || !battleScreen || !selectionScreen || !messageBox ||
+                 !findMatchButton || !waitingMessage || !battleLogElement || !moveButtonsContainer ||
+                 !switchOptionsContainer || !pokemonSelectionList || !selectionCount ||
+                 !confirmSelectionButton || !playerHealthBar || !playerHealthText ||
+                 !opponentHealthBar || !opponentHealthText || !playerPokemonName || !opponentPokemonName ||
+                 !playerSpriteImg || !opponentSpriteImg || !playerSpriteContainer || !opponentSpriteContainer ||
+                 !usernameInput || !setUsernameButton || !usernameDisplay || !playerUsernameDisplay || !opponentUsernameDisplay ||
+                 !playerAbilityDisplay || !opponentAbilityDisplay) { // Added ability elements here
+                 console.warn("DOM elements not ready during reset, will retry on DOMContentLoaded");
+                 return;
+             }
+
+             // Keep existing screen toggling and game state reset
+             startScreen.classList.remove('hidden'); battleScreen.classList.add('hidden'); selectionScreen.classList.add('hidden'); messageBox.style.display = 'none';
+             gameState = 'start'; currentGameId = null; myPlayerId = socket.id; myPlayerNum = null; currentGameData = null; opponentUsername = ''; selectedPokemonIds = [];
+
+             // Keep username UI reset logic
+             if (myUsername && usernameDisplay) { usernameDisplay.textContent = `Username: ${myUsername}`; usernameInput.value = myUsername; usernameInput.disabled = false; setUsernameButton.disabled = false; setUsernameButton.textContent = 'Set Name'; findMatchButton.disabled = false; findMatchButton.classList.remove('disabled'); }
+             else { usernameDisplay.textContent = ''; usernameInput.value = ''; usernameInput.disabled = false; setUsernameButton.disabled = false; setUsernameButton.textContent = 'Set Name'; findMatchButton.disabled = true; findMatchButton.classList.add('disabled'); }
+             findMatchButton.textContent = 'Find Match'; waitingMessage.style.display = 'none'; waitingMessage.textContent = '';
+
+             // Keep existing battle/selection UI reset, add ability reset
+             battleLogElement.innerHTML = 'Welcome to the Battle Arena!';
+             moveButtonsContainer.innerHTML = ''; switchOptionsContainer.innerHTML = ''; pokemonSelectionList.innerHTML = '';
+             selectionCount.textContent = 'Selected: 0 / 3'; confirmSelectionButton.disabled = true; confirmSelectionButton.classList.add('disabled'); confirmSelectionButton.textContent = 'Confirm Team';
+             updateHealthBar(playerHealthBar, playerHealthText, 100, 100); updateHealthBar(opponentHealthBar, opponentHealthText, 100, 100);
+             playerPokemonName.textContent = "Player Pokémon"; opponentPokemonName.textContent = "Opponent Pokémon";
+             playerSpriteImg.src = ""; opponentSpriteImg.src = ""; playerSpriteImg.alt = "Player Pokémon"; opponentSpriteImg.alt = "Opponent Pokémon";
+             playerUsernameDisplay.textContent = myUsername || 'You'; opponentUsernameDisplay.textContent = 'Opponent';
+             playerAbilityDisplay.textContent = "Ability"; // Reset ability text
+             opponentAbilityDisplay.textContent = "Ability"; // Reset ability text
+             playerSpriteContainer.style.borderColor = '#333'; opponentSpriteContainer.style.borderColor = '#333';
+
+             fetchLeaderboard();
+             // Request available Pokémon list from server
+             socket.emit('requestAvailablePokemon'); // Request list on reset
+        }
+
+        function displayGameOver(winnerId) {
+             if (!messageBox) return;
+             gameState = 'gameOver'; disableActionButtons(true);
+             let winnerUsername = "Unknown", loserUsername = "Unknown";
+             if (currentGameData?.battleState) {
+                const p1 = currentGameData.battleState.player1; const p2 = currentGameData.battleState.player2;
+                if (p1 && p2) { winnerUsername = (winnerId === p1.id) ? p1.username : p2.username; loserUsername = (winnerId === p1.id) ? p2.username : p1.username; }
+             }
+             const message = winnerId === myPlayerId ? `Congratulations ${myUsername || 'Player'}! You defeated ${opponentUsername || 'your opponent'}!` : `Sorry ${myUsername || 'Player'}, you were defeated by ${opponentUsername || 'your opponent'}...`;
+             showMessage(message, resetToStartScreen);
+        }
+
+
+        // --- Socket Event Listeners ---
+        socket.on('connect', () => {
+            console.log('Connected to server!', socket.id); myPlayerId = socket.id;
+            if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', () => { resetToStartScreen(); fetchLeaderboard(); }); }
+            else { resetToStartScreen(); }
+            myUsername = ''; opponentUsername = ''; availablePokemonForSelection = [];
+             // Request pokemon list immediately on connect
+             socket.emit('requestAvailablePokemon');
+        });
+
+        socket.on('disconnect', (reason) => {
+            console.log('Disconnected from server:', reason);
+             setTimeout(() => { if (gameState !== 'gameOver') showMessage(`Disconnected: ${reason}. Please refresh.`, resetToStartScreen); resetToStartScreen(); }, 100);
+        });
+
+        socket.on('availablePokemon', (pokemonList) => {
+            console.log("Received available Pokémon:", pokemonList);
+            if (Array.isArray(pokemonList)) {
+                availablePokemonForSelection = pokemonList;
+                if (gameState === 'selecting' || gameState === 'start') { populateSelectionScreen(); } // Populate if needed
+            } else { console.error("Invalid available Pokémon list received:", pokemonList); availablePokemonForSelection = []; }
+        });
+
+        socket.on('usernameSet', (confirmedUsername) => {
+             console.log('Username confirmed by server:', confirmedUsername); myUsername = confirmedUsername;
+             if(usernameInput) usernameInput.value = confirmedUsername; if(usernameDisplay) usernameDisplay.textContent = `Username: ${confirmedUsername}`;
+             if(setUsernameButton) { setUsernameButton.disabled = false; setUsernameButton.textContent = 'Set Name'; }
+             if(findMatchButton) { findMatchButton.disabled = false; findMatchButton.classList.remove('disabled'); }
+             if(playerUsernameDisplay) playerUsernameDisplay.textContent = myUsername;
+         });
+
+        socket.on('waitingForOpponent', () => {
+             if (!waitingMessage || !findMatchButton) return; console.log('Waiting for an opponent...'); gameState = 'waiting';
+             waitingMessage.textContent = 'Waiting for an opponent...'; waitingMessage.style.display = 'block';
+             findMatchButton.disabled = true; findMatchButton.textContent = 'Waiting...'; findMatchButton.classList.add('disabled');
+        });
+
+        socket.on('matchFound', ({ gameId, opponentUsername: oppName }) => {
+             if (!startScreen || !waitingMessage || !selectionScreen || !battleScreen) return;
+             console.log(`Match found! Game ID: ${gameId}, Opponent: ${oppName}`); currentGameId = gameId; opponentUsername = oppName; gameState = 'selecting';
+             startScreen.classList.add('hidden'); waitingMessage.style.display = 'none'; selectionScreen.classList.remove('hidden'); battleScreen.classList.add('hidden');
+             populateSelectionScreen();
+        });
+
+         socket.on('waitingForOpponentSelection', () => {
+             if (!confirmSelectionButton || !selectionCount) return; console.log('Waiting for opponent to select team...'); gameState = 'waiting';
+             confirmSelectionButton.disabled = true; confirmSelectionButton.textContent = 'Waiting...'; confirmSelectionButton.classList.add('disabled');
+             selectionCount.textContent = `Waiting for ${opponentUsername || 'opponent'}...`;
+        });
+
+         socket.on('opponentReady', () => {
+             if (!selectionCount) return; console.log('Opponent has selected their team.');
+             selectionCount.textContent = `${opponentUsername || 'Opponent'} is ready! Starting...`;
+         });
+
+        socket.on('battleStart', (initialState) => {
+             if (!selectionScreen || !battleScreen) return; console.log('Battle starting!', initialState);
+             if (!initialState || !initialState.gameId || initialState.gameId !== currentGameId) { console.warn("Received battleStart for wrong/missing game ID.", initialState?.gameId, currentGameId); return; }
+             gameState = 'battle'; selectionScreen.classList.add('hidden'); battleScreen.classList.remove('hidden');
+             if (initialState.battleState) { // Update local usernames from initial state
+                 const p1 = initialState.battleState.player1; const p2 = initialState.battleState.player2;
+                 if (p1?.id === myPlayerId) myUsername = p1.username; else if (p2?.id === myPlayerId) myUsername = p2.username;
+                 if (p1?.id !== myPlayerId) opponentUsername = p1?.username; else if (p2?.id !== myPlayerId) opponentUsername = p2?.username;
+             }
+             updateUIFromState(initialState);
+        });
+
+        socket.on('gameStateUpdate', (newState) => {
+             if (!newState || !newState.gameId || newState.gameId !== currentGameId || (gameState !== 'battle' && gameState !== 'waiting')) { console.warn("Ignoring state update for wrong game/state.", `Msg GID: ${newState?.gameId}, Curr GID: ${currentGameId}, Curr State: ${gameState}`); return; }
+             updateUIFromState(newState);
+        });
+
+         socket.on('forceSwitch', ({ reason }) => {
+             if (!messageBox) return; console.log('Server forcing switch:', reason);
+             showMessage(reason ? `${reason} Choose your next Pokémon.` : 'Choose your next Pokémon.');
+         });
+
+        socket.on('gameOver', ({ winnerId, finalState }) => {
+             console.log('Game over! Winner:', winnerId);
+             if (!finalState || !finalState.gameId || finalState.gameId !== currentGameId) { console.warn("Received gameOver for wrong/missing game ID."); gameState = 'gameOver'; showMessage("Game Over! (State mismatch)", resetToStartScreen); return; }
+             updateUIFromState(finalState); displayGameOver(winnerId);
+        });
+
+        socket.on('opponentDisconnected', ({ message }) => {
+             console.log('Opponent disconnected.');
+             if ((gameState === 'battle' || gameState === 'selecting' || gameState === 'waiting') && gameState !== 'gameOver') { gameState = 'gameOver'; showMessage(message || `${opponentUsername || 'Your opponent'} disconnected. You win!`, resetToStartScreen); }
+             else if (gameState === 'start') { resetToStartScreen(); }
+        });
+
+        socket.on('gameError', ({ message }) => {
+             console.error('Server Error:', message); showMessage(`Error: ${message}`);
+             if (currentGameData && currentGameData.turn === myPlayerId && gameState === 'battle') {
+                  const playerState = (currentGameData.battleState.player1?.id === myPlayerId) ? currentGameData.battleState.player1 : currentGameData.battleState.player2;
+                 const mustSwitch = playerState?.mustSwitch ?? false;
+                 if (!mustSwitch) { disableActionButtons(false); goBackToActionSelect(); } else { showSwitchSelection(true); disableActionButtons(false); }
+             }
+        });
+
+         socket.on('leaderboardData', (leaderboardData) => {
+             if (!leaderboardDiv) return; leaderboardDiv.innerHTML = '';
+             if (!leaderboardData || leaderboardData.length === 0) { leaderboardDiv.textContent = 'Leaderboard is empty.'; return; }
+             const list = document.createElement('ol'); list.classList.add('list-decimal', 'list-inside');
+             leaderboardData.forEach(entry => {
+                 const item = document.createElement('li'); item.textContent = `${entry.rank}. ${entry.username} - ${entry.wins} wins`;
+                 if (entry.username === myUsername) item.classList.add('font-bold', 'text-blue-600'); list.appendChild(item);
+             });
+             leaderboardDiv.appendChild(list);
+         });
+
+    </script>
+
+</body>
+</html>
