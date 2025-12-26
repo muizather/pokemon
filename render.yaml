@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: pokemon-battle-arena
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    branch: main
+    envVars:
+      - key: PORT
+        value: 10000
