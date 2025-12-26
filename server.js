@@ -23,7 +23,9 @@ let waitingPlayer = null;
 let activeGames = {};
 let leaderboard = {};
 let pokemonDataCache = {}; // Cache for fetched Pokémon details (including moves/ability)
+let pokemonFetchPromises = {}; // Promise cache for deduplicating Pokémon requests
 let moveDataCache = {}; // Cache for fetched move details (power)
+let moveFetchPromises = {}; // Promise cache for deduplicating move requests
 let availablePokemonDetails = []; // Basic info for selection screen
 
 // --- PokéAPI Fetching Logic ---
@@ -38,25 +40,39 @@ async function getMoveDetails(moveInfo) {
 
     if (moveDataCache[moveName]) {
         // Return clone from cache
-        return JSON.parse(JSON.stringify(moveDataCache[moveName]));
+        return structuredClone(moveDataCache[moveName]);
     }
 
-    // console.log(`Cache miss for move ${moveName}, fetching details...`);
+    // Check if fetch is already in progress
+    if (!moveFetchPromises[moveName]) {
+        moveFetchPromises[moveName] = (async () => {
+            // console.log(`Cache miss for move ${moveName}, fetching details...`);
+            try {
+                const response = await axios.get(moveUrl);
+                const power = response.data.power;
+
+                const moveData = {
+                    name: moveName.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '), // Format name
+                    power: power === null ? 0 : power // Assign 0 power to status moves
+                };
+
+                moveDataCache[moveName] = moveData; // Store source of truth
+                return moveData;
+            } catch (error) {
+                console.error(`Error fetching details for move "${moveName}":`, error.message);
+                // Return a default representation if fetch fails
+                return { name: moveName, power: 0 }; // Assign 0 power on error
+            } finally {
+                delete moveFetchPromises[moveName]; // Clean up promise
+            }
+        })();
+    }
+
     try {
-        const response = await axios.get(moveUrl);
-        const power = response.data.power;
-
-        const moveData = {
-            name: moveName.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '), // Format name
-            power: power === null ? 0 : power // Assign 0 power to status moves
-        };
-
-        moveDataCache[moveName] = JSON.parse(JSON.stringify(moveData)); // Cache clone
-        return moveData;
+        const moveData = await moveFetchPromises[moveName];
+        return structuredClone(moveData);
     } catch (error) {
-        console.error(`Error fetching details for move "${moveName}":`, error.message);
-        // Return a default representation if fetch fails
-        return { name: moveName, power: 0 }; // Assign 0 power on error
+        return { name: moveName, power: 0 };
     }
 }
 
@@ -67,71 +83,87 @@ async function getMoveDetails(moveInfo) {
  */
 async function getPokemonDetails(idOrName) {
     const identifier = String(idOrName).toLowerCase();
+
+    // 1. Check Cache
     if (pokemonDataCache[identifier]) {
         // console.log(`Cache hit for ${identifier}`);
-        return JSON.parse(JSON.stringify(pokemonDataCache[identifier]));
+        return structuredClone(pokemonDataCache[identifier]);
     }
 
-    console.log(`Cache miss for ${identifier}, fetching Pokémon from PokéAPI...`);
-    try {
-        const response = await axios.get(`${POKEAPI_BASE_URL}/pokemon/${identifier}`);
-        const data = response.data;
+    // 2. Check Pending Requests (Thundering Herd Fix)
+    if (!pokemonFetchPromises[identifier]) {
+        pokemonFetchPromises[identifier] = (async () => {
+            console.log(`Cache miss for ${identifier}, fetching Pokémon from PokéAPI...`);
+            try {
+                const response = await axios.get(`${POKEAPI_BASE_URL}/pokemon/${identifier}`);
+                const data = response.data;
 
-        const getStat = (statName) => data.stats.find(s => s.stat.name === statName)?.base_stat || 0;
+                const getStat = (statName) => data.stats.find(s => s.stat.name === statName)?.base_stat || 0;
 
-        // --- Move Selection ---
-        let selectedMoveInfos = [];
-        // Find moves learned by leveling up in the target version group
-        for (const moveInfo of data.moves) {
-             const learnMethod = moveInfo.version_group_details.find(vgd =>
-                 vgd.version_group.name === TARGET_GAME_VERSION_GROUP && vgd.move_learn_method.name === 'level-up'
-             );
-             if (learnMethod) {
-                 selectedMoveInfos.push(moveInfo); // Store the whole moveInfo temporarily
-             }
-             if (selectedMoveInfos.length >= MAX_MOVES_PER_POKEMON) break; // Stop once we have enough
-        }
-        // If not enough found in target version, take first few overall (less ideal)
-        if (selectedMoveInfos.length < MAX_MOVES_PER_POKEMON) {
-            const needed = MAX_MOVES_PER_POKEMON - selectedMoveInfos.length;
-            const existingNames = selectedMoveInfos.map(m => m.move.name);
-            for (const moveInfo of data.moves) {
-                 if (selectedMoveInfos.length >= MAX_MOVES_PER_POKEMON) break;
-                 if (!existingNames.includes(moveInfo.move.name)) { // Avoid duplicates
-                    selectedMoveInfos.push(moveInfo);
-                 }
+                // --- Move Selection ---
+                let selectedMoveInfos = [];
+                // Find moves learned by leveling up in the target version group
+                for (const moveInfo of data.moves) {
+                     const learnMethod = moveInfo.version_group_details.find(vgd =>
+                         vgd.version_group.name === TARGET_GAME_VERSION_GROUP && vgd.move_learn_method.name === 'level-up'
+                     );
+                     if (learnMethod) {
+                         selectedMoveInfos.push(moveInfo); // Store the whole moveInfo temporarily
+                     }
+                     if (selectedMoveInfos.length >= MAX_MOVES_PER_POKEMON) break; // Stop once we have enough
+                }
+                // If not enough found in target version, take first few overall (less ideal)
+                if (selectedMoveInfos.length < MAX_MOVES_PER_POKEMON) {
+                    const needed = MAX_MOVES_PER_POKEMON - selectedMoveInfos.length;
+                    const existingNames = selectedMoveInfos.map(m => m.move.name);
+                    for (const moveInfo of data.moves) {
+                         if (selectedMoveInfos.length >= MAX_MOVES_PER_POKEMON) break;
+                         if (!existingNames.includes(moveInfo.move.name)) { // Avoid duplicates
+                            selectedMoveInfos.push(moveInfo);
+                         }
+                    }
+                }
+
+                // Fetch details (power) for the selected moves concurrently
+                const moveDetailPromises = selectedMoveInfos.map(moveInfo => getMoveDetails(moveInfo));
+                const formattedMoves = await Promise.all(moveDetailPromises);
+
+                // --- Ability Selection ---
+                const firstAbilityInfo = data.abilities?.find(a => !a.is_hidden); // Find first non-hidden ability
+                const abilityName = firstAbilityInfo ? firstAbilityInfo.ability.name.split('-').map(w=>w[0].toUpperCase()+w.slice(1)).join(' ') : 'Unknown'; // Format name
+
+                const formattedData = {
+                    id: data.id,
+                    apiId: identifier,
+                    name: data.name.charAt(0).toUpperCase() + data.name.slice(1),
+                    hp: getStat('hp'),
+                    attack: getStat('attack'),
+                    defense: getStat('defense'),
+                    speed: getStat('speed'),
+                    spriteUrl: data.sprites?.front_default || null,
+                    moves: formattedMoves.filter(m => m !== null), // Ensure only successful fetches are included
+                    abilityName: abilityName, // Add ability name
+                };
+
+                pokemonDataCache[identifier] = formattedData; // Store Source
+                console.log(`Fetched and formatted ${formattedData.name} (ID: ${formattedData.id}) with ${formattedData.moves.length} moves and ability ${formattedData.abilityName}.`);
+                return formattedData;
+
+            } catch (error) {
+                console.error(`Error fetching Pokémon data for "${identifier}":`, error.message);
+                if (error.response && error.response.status === 404) console.error(`Pokemon "${identifier}" not found.`);
+                else console.error(`Network/other error fetching ${identifier}.`);
+                throw error; // Propagate error to remove from promise map
+            } finally {
+                delete pokemonFetchPromises[identifier];
             }
-        }
+        })();
+    }
 
-        // Fetch details (power) for the selected moves concurrently
-        const moveDetailPromises = selectedMoveInfos.map(moveInfo => getMoveDetails(moveInfo));
-        const formattedMoves = await Promise.all(moveDetailPromises);
-
-        // --- Ability Selection ---
-        const firstAbilityInfo = data.abilities?.find(a => !a.is_hidden); // Find first non-hidden ability
-        const abilityName = firstAbilityInfo ? firstAbilityInfo.ability.name.split('-').map(w=>w[0].toUpperCase()+w.slice(1)).join(' ') : 'Unknown'; // Format name
-
-        const formattedData = {
-            id: data.id,
-            apiId: identifier,
-            name: data.name.charAt(0).toUpperCase() + data.name.slice(1),
-            hp: getStat('hp'),
-            attack: getStat('attack'),
-            defense: getStat('defense'),
-            speed: getStat('speed'),
-            spriteUrl: data.sprites?.front_default || null,
-            moves: formattedMoves.filter(m => m !== null), // Ensure only successful fetches are included
-            abilityName: abilityName, // Add ability name
-        };
-
-        pokemonDataCache[identifier] = JSON.parse(JSON.stringify(formattedData));
-        console.log(`Fetched and formatted ${formattedData.name} (ID: ${formattedData.id}) with ${formattedData.moves.length} moves and ability ${formattedData.abilityName}.`);
-        return formattedData;
-
+    try {
+        const data = await pokemonFetchPromises[identifier];
+        return structuredClone(data);
     } catch (error) {
-        console.error(`Error fetching Pokémon data for "${identifier}":`, error.message);
-        if (error.response && error.response.status === 404) console.error(`Pokemon "${identifier}" not found.`);
-        else console.error(`Network/other error fetching ${identifier}.`);
         return null;
     }
 }
